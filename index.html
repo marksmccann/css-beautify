@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSS Beautify</title>
+</head>
+<body>
+    <textarea id="input" style="width:500px;height:200px;">
+    </textarea>
+    <textarea id="output" style="width:500px;height:200px;">
+    </textarea>
+    <button id="run">Beautify</button>
+    <script src="../css-minify/css-minify.js"></script>
+    <script src="css-beautify.js"></script>
+    <script>
+
+    (function( cssBeautify ){
+
+        var input = document.getElementById('input');
+        var output = document.getElementById('output');
+        var button = document.getElementById('run');
+
+        button.addEventListener('click',function(e){
+            e.preventDefault();
+            output.value = cssBeautify(input.value);
+        },false);
+
+    })( cssBeautify );
+
+    </script>
+</body>
+</html>
