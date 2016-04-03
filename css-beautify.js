@@ -26,7 +26,8 @@ var cssBeautify = (function(){
         afterRule: '\n\n',
         afterSelector: ' ',
         afterCommas: '\n',
-        afterComments: '\n',
+        afterComments: '\n\n',
+        afterCharset: '\n\n',
         beforeQueryClose: '\n\n',
         afterQueryOpen: '\n\n',
         afterFirstComment: '\n\n',
@@ -86,8 +87,10 @@ var cssBeautify = (function(){
                     // define the space after the opening bracket
                     .replace(/\s*}\s*$/, settings.beforeQueryClose+'}'+settings.afterRule)
             })
+            // formatting for @charset
+            .replace(/\s*(@charset *["'][\w\d-]*['"];)\s*/, '$1'+settings.afterCharset)
             // formatting for the first comment of the page
-            .replace(/^(\s*\/\*((?!\*\/)(.|\n))*\*\/)/, '$1'+settings.afterFirstComment)
+            .replace(/^(\s*\/\*((?!\*\/)(.|\n))*\*\/\s*)/, '$1'+settings.afterFirstComment)
             // trim the spaces from the beginning and end
             .trim();
     }
