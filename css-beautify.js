@@ -30,8 +30,10 @@ var cssBeautify = (function(){
         afterCharset: '\n\n',
         beforeQueryClose: '\n\n',
         afterQueryOpen: '\n\n',
-        afterFirstComment: '\n\n',
-        lastSemiColon: true
+        afterFirstComment: '\n',
+        addLastSemiColon: true,
+        addLeadingZero: false,
+        removeZeroUnits: true
     }
 
     /**
@@ -43,7 +45,7 @@ var cssBeautify = (function(){
         // time to do some formatting
         return styles
             // formatting the content for each individual rule
-            .replace(/{(([^{}("']*([("'][^\'")]*[\'")])?[^{}("']*)*)}\s*/g,function(contents){
+            .replace(/{(\/\*((?!\*\/)(.|\n))*\*\/|[("'][^\"')]*["')]|[^{}"'])*}\s*/g,function(contents){
                 return contents
                     // get each individual line to format
                     .replace(/([\w\s-]*:([^;'"(}])*(\(["']?[^'")]*['"]?\)|["'][^'"]*['"])?([^;}])*;?( *\/\*((?!\*\/)(.|\n))*\*\/)*|\s*\/\*((?!\*\/)(.|\n))*\*\/)/g, function(line){
@@ -57,31 +59,40 @@ var cssBeautify = (function(){
                             // format space between last declaration and comment 
                             .replace(/([)'"%\w\d]) *(\/\*(.|\n)*)$/, '$1 $2')
                             // if semicolon is missing and add semicolon if setting is set
-                            .replace(/([)'"%\w\d])((?:\s*\/\*((?!\*\/)(.|\n))*\*\/)*\s*)$/, '$1'+(settings.lastSemiColon?';':'')+'$2');
+                            .replace(/([)'"%\w\d])((?:\s*\/\*((?!\*\/)(.|\n))*\*\/)*\s*)$/, '$1'+(settings.addLastSemiColon?';':'')+'$2')
+                            // add or remove leading zero if setting set
+                            //.replace( /0(\.\d+(em|ex|%|px|cm|mm|in|pt|pc|ch|rem|vh|vw|vmin|vmax))/g, (settings.addLeadingZero?'0':'')+'$1' )
+                            // remove units on zeros if setting set
+                            //.replace( /([\s:])0(em|ex|%|px|cm|mm|in|pt|pc|ch|rem|vh|vw|vmin|vmax)/g, '$10'+(settings.removeZeroUnits?'':'$2') );
                     })
                     // remove any space at end of rule and replace 
                     // with a single new line
                     .replace( /\s*}\s*$/, '\n}'+settings.afterRule )
             })
             // formatting each selector
-            .replace( /[^{}]*(\/\*((?!\*\/)(.|\n))*\*\/)*[^{}]*{\n/g, function(selector){
+            .replace( /(\/\*((?!\*\/)(.|\n))*\*\/|[^{}])*{\n/g, function(selector){
                 return selector
                     // one space between selector and opening bracket
                     .replace(/\s*{\n$/, settings.afterSelector+'{\n')
                     // isolate the selector from any spaces or comments before it
                     .replace(/[^\/]*{\n$/, function(s){
-                        // new line or space after each comma
-                        return s.replace(/\s*,\s*/g,','+settings.afterCommas)
+                        return s
+                            // new line or space after each comma
+                            .replace(/\s*,\s*/g,','+settings.afterCommas)
+                            // reduce any decendants to single space
+                            //.replace(/\s{2,}((\([^)]*\)|\[[^[]*\]|::?[\w-_]*|[.#][\w-_]*)+)/g, ' $1')
+                            // spaces around combinators
+                            //.replace(/\s*([+>~])\s*((\([^)]*\)|\[[^[]*\]|::?[\w-_]*|[.#][\w-_]*)+)/g, ' $1 $2');
                     })
                     // put comments on own line
                     .replace(/(\/\*((?!\*\/)(.|\n))*\*\/)\s*/g, '$1'+settings.afterComments)
                     
             })
             // formatting for queries with nested rules
-            .replace(/{([^{}]*{[^}]*})*\s*}\s*/g, function(query){
+            .replace(/{([^{}]*{(\/\*((?!\*\/)(.|\n))*\*\/|[("'][^\"')]*["')]|[^{}"'])*})*\s*}\s*/g, function(query){
                 return query
                     // define the space after the opening bracket
-                    .replace(/^{\s*/, '{'+settings.afterQueryOpen)
+                    .replace(/^{\s*/, settings.afterSelector+'{'+settings.afterQueryOpen)
                     // indent every new line
                     .replace(/\n(.+)/g, '\n'+settings.indent+'$1')
                     // define the space after the opening bracket
