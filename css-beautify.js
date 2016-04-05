@@ -43,7 +43,7 @@ var cssBeautify = (function(){
         // time to do some formatting
         return styles
             // formatting the content for each individual rule
-            .replace(/{([^{}]*)}\s*/g,function(contents){
+            .replace(/{(([^{}("']*([("'][^\'")]*[\'")])?[^{}("']*)*)}\s*/g,function(contents){
                 return contents
                     // get each individual line to format
                     .replace(/([\w\s-]*:([^;'"(}])*(\(["']?[^'")]*['"]?\)|["'][^'"]*['"])?([^;}])*;?( *\/\*((?!\*\/)(.|\n))*\*\/)*|\s*\/\*((?!\*\/)(.|\n))*\*\/)/g, function(line){
