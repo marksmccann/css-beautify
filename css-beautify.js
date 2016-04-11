@@ -196,7 +196,6 @@ var cssBeautify = (function(){
             })
             // at rules
             .replace( regex.atrules.rule, function( rule, selector, block ) {
-                console.log(block);
                 // whole rule selector
                 return selector
                     // individual selectors
