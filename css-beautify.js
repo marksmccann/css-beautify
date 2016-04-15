@@ -6,229 +6,996 @@
 
 var cssBeautify = (function(){
 
-    /**
-     * extends object
-     */
-    var extend = function () {
-        var a = arguments;
-        for( var i = 1; i < a.length; i++ )
-            for( var key in a[i] )
-                if(a[i].hasOwnProperty(key))
-                    a[0][key] = a[i][key];
-        return a[0];
+    var TokenStream = function( input ) {
+        this.str = input.split('');
+        this.cursor = 0;
+        this.string = '';
+        this.position = 'root';
     }
 
-    /**
-     * regex
-     */
-    var regex = {
-        ruleset: {
-            // isolating css rule from entire sheet
-            // $1:(comment|anything but braces|forward slash)1+{(comment|paren|string|anything but braces|forward slash)}
-            rule: /((?:\/\*(?:(?!\*\/)(?:.|\n))*\*\/|(?:[^{}\/]))+){((?:(?:\/\*(?:(?!\*\/)(?:.|\n))*\*\/|\([^)]*\)|["'][^'"]*['"]|[^{}\/])*))}/g,
-            // isolates individual selectors from ruleset
-            // (comment|string|anything but open brace|comma)1+(comma|end of string)
-            selector: /(\/\*((?!\*\/)(.|\n))*\*\/|["'][^'"]*['"]|[^{,])+(,|$)/g,
-            // isolating the selector parts from individual selectors
-            // ((attribute|pseudo|(class|id|element))atrule|at rule paren|comment|operator)
-            part: /\s*(([\w-_.#]*\[\s*[\w-_]+\s*[~$|*\^]?=\s*(["']?[^'"]*['"]?)+\]|::?[\w-]*(\([^)]*\))?|[.#]?[\w-_]+)+|@[\w-]+|\([\w-]+\s*:\s*[\w.]*\)|\/\*((?!\*\/)(.|\n))*\*\/|[>+~])/g,
-            // isolate each line/declaration from block
-            // property:((paren|string|anything but semicolon|forward slash)0+;?(optional same line comment)|comment)
-            line: /\s*([*_]?[\w-]+\s*:(\([^)]*\)|["'][^'"]*['"]|[^;/*])*;?( *\/\*((?!\*\/).)*\*\/)*|\/\*((?!\*\/)(.|\n))*\*\/)/g,
-            // isolate value from a declaration
-            // (anything but colon|forward slash|paren|string)0+comments?
-            value: /([^:/]|\([^)]*\)|["'][^\"']*['"]|)*;?( *\/\*((?!\*\/).)*\*\/)*\s*$/
-        },
-        atrules: {
-            // isolate @rules from entire sheet
-            // $1:((comment)0+@atrule(string|paren|word)1+(semicolon)?){$2:((comment|string|anything but open brace){(comment|paren|string|anything but braces})0+})0+)}
-            rule: /((?:\/\*(?:(?!\*\/)(?:.|\n))*\*\/\s*)*@(?:charset|font-face|import|keyframes|media|page)+(?:\s*(?:["'][^"']*['"]|\([^)]*\),?|\w+|[,]))+\s*[;{]?\s*)(?:(((\/\*((?!\*\/)(.|\n))*\*\/|["'][^'"]*['"]|[^{])+{(\/\*((?!\*\/)(.|\n))*\*\/|\([^)]*\)|["'][^'"]*['"]|[^{}\/])*})*\s*)})?/g,
-            // isolates individual selectors from ruleset
-            // (comment|string|anything but open brace|comma)1+(comma|end of string)
-            selector: /(\/\*((?!\*\/)(.|\n))*\*\/|["'][^'"]*['"]|[^{,])+[,{;]/g,
-            // isolating the selector parts from individual selectors
-            // (@rule|media paren|url paren|string|word|comma)1+
-            parts: /\s*(@[\w-]+|\([\w-]+\s*:\s*[\w.]*\)|url\(["'][^"']*["']\)|["'][^'"]*['"]|\w+|[,])/g
+    TokenStream.prototype.current = function() {
+        return this.str[ this.cursor ];
+    }
+
+    TokenStream.prototype.next = function( amount ) {
+
+        for( var i=0; i<(amount || 1); i++ ) {
+            this.cursor++;
         }
+
+        return this;
+
+    };
+
+    TokenStream.prototype.move = function( amount ) {
+
+        for( var i=0; i<(amount || 1); i++ ) {
+            this.add().next();
+        }
+
+        return this;
+
+    };
+
+    TokenStream.prototype.peek = function( lookAhead, includeCurrent ) {
+
+        var string = '';
+
+        if( lookAhead < 0 ) {
+
+            for( var i=(includeCurrent?0:1); i<=(lookAhead*-1 || 1); i++ ) {
+
+                var key = this.cursor - i;
+
+                if( key >= 0 ) {
+
+                    string += this.str[ key ];
+
+                } else {
+
+                    break;
+
+                }
+
+            }
+
+        } else {
+
+            for( var i=(includeCurrent?0:1); i<=(lookAhead || 1); i++ ) {
+
+                var key = this.cursor + i;
+
+                if( key <= this.str.length-1 ) {
+
+                    string += this.str[ key ];
+
+                } else {
+
+                    break;
+
+                }
+
+            }
+
+        }
+
+        return string;
+
+    };
+
+    TokenStream.prototype.add = function() {
+        if( typeof this.current() != 'undefined' ) {
+            this.string += this.current();
+        }
+        return this;
+    };
+
+    TokenStream.prototype.eof = function() {
+        return this.cursor >= this.str.length;
+    }
+
+    TokenStream.prototype.concat = function( string ) {
+        this.string += string;
+        return this;
+    }
+
+    TokenStream.prototype.iterate = function( callback, condition ) {
+        var i = 0;
+        // stop iterating when (1) end of file is reached
+        // (2) if infinitely looping (3) optional passed-in
+        // condition is not met
+        while( (condition||function(){return 1;}).call(this) && !this.eof() && i<this.str.length*2 ) {
+            callback.call(this, i);
+            i++;
+        }
+        return this;
     }
 
     /**
-     * default settings for beautifier
+     * compares 'a' to current char or optionally, peek a number of characters 
+     * forward or backwards. returns true if there is a match.
+     * @param {string|regex} a
+     * @param {integer} b
+     * @return {boolean}
      */
-    var defaults = {
-        // spaces for indentation
-        indentation: '    ',
-        // .class { ... }[here]
-        afterRule: '\n\n',
-        // .class,[here].class{
+    TokenStream.prototype.is = function( a, b ) {
+        return (new RegExp(a)).test( (typeof b!='undefined'?this.peek(b):this.current()) );
+    }
+
+    // returns true if the next (non-space) character matches the one provided
+    // forecast
+    TokenStream.prototype.anticipate = function( character, includeCurrent ) {
+        var i = 1;
+        var lastChar = ' ';
+        while( /\s/.test( lastChar ) ) {
+            lastChar = this.peek(i, (includeCurrent||false)).substr(i-1);
+            i++;
+        }
+        return (new RegExp(character)).test(lastChar);
+    };
+
+    TokenStream.prototype.consume = function( condition ) {
+        // move the cursor until the condition is met
+        this.iterate( function(){
+            this.move();
+        }, condition);
+        return this;
+    };
+
+    TokenStream.prototype.eat = function( match ) {
+        // move the cursor until the condition is met
+        this.consume( function(){ 
+            return !this.is(match);
+        });
+        return this;
+    };
+
+    TokenStream.prototype.skip = function( condition ) {
+        // move the cursor until the condition is met
+        this.iterate( function(){
+            this.next();
+        }, condition);
+        return this;
+    };
+
+    TokenStream.prototype.at = function( position ) {
+        return (new RegExp(position)).test(this.position);
+    };
+
+    TokenStream.prototype.change = function( position, move ) {
+        this.position = position;
+        if( move ) this.move();
+        return this;
+    };
+
+    TokenStream.prototype.spaces = function() {
+        this.skip(function() {
+            // if the current char is a space character
+            return this.is('\\s');
+        });
+        return this;
+    }
+
+    var settings = {
+        // indentation
+        indent: '    ',
+        // space after each declaration
+        // display: block;[here] | /* ... */[here]
+        afterDeclaration: '\n',
+        // space after individual, 
+        // comma-separated selectors
         afterSelector: '\n',
-        // .class[here]{
-        beforeOpenBrace: ' ',
-        // /* comment */[here]
-        afterComment: '\n\n',
-        // font-family: arial,[here]sans-serif;
-        afterComma: ' ',
-        // :nth-child([here]...[here])
-        parenPadding: '',
-        // [here]{indent}property: value;
-        beforeDeclaration: '\n',
-        // property[here]: value;
-        afterProperty: '',
-        // property:[here]value;
-        beforeValue: ' ',
-        // property: value;[here]} 
-        afterDeclarations: '\n',
-        // double (") or single (') quotes
-        quoteType: '\'',
-        // @media {{beforeDeclaration}{indent}[here]...[here]{afterDeclarations}}
+        // space after rules
+        // .class { ... }[here] & /* ... */[here]
+        afterRule: '\n\n',
+        // additional space after open brace
+        // and before closing brace
+        // @media ... {[afterDec..][here] ... [here]}
         atRulePadding: '\n',
-        // force quotes around attribute selector values
-        requireAttributeQuotes: true,
-        // remove quotes around URL values
-        removeURLQuotes: true,
-        // #ffffff -> #fff
-        shortenHex: true,
-        // #FFF -> #fff
+        // after selectors 
+        afterSelectors: ' ',
+        // preferred quote type
+        quoteType: "'",
+        // lowercase hexadecimals
         lowercaseHex: true,
-        // 0.45em -> .45em
-        removeLeadingZero: true,
-        // 0em -> 0
+        // shorten hexadecmials
+        shortenHex: true,
+        // adds final semi-colon if missing
+        finalSemiColon: true,
+        // remove zeros from decimals 
+        removeLeadingZeros: true,
+        // remove units from zero values
         removeZeroUnits: true,
-        // adds semicolon to final declaration
-        addLastSemiColon: true
+        // method to run when beautifier starts
+        onStart: function(){},
+        // method to run when beautifier completes
+        onComplete: function(){},
+        // method to run every time the tool iterates
+        onIteration: function(){}
     }
 
-    /**
-     * return the beautify function
-     */
-    return function( styles, options ) {
-        // set minifier settings
-        var settings = extend( defaults, options || {} );
-        // time to do some formatting
-        return styles
-            // rulesets
-            .replace( regex.ruleset.rule, function( rule, selectors, block ) {
-                // whole selector
-                return selectors
-                    // individual selectors
-                    .replace( regex.ruleset.selector, function( selector ) {
-                        return selector
-                            // selector parts
-                            .replace( regex.ruleset.part, function( part ) {
-                                return part
-                                    // one space after each part
-                                    .replace( /^\s*/, ' ' )
-                                    // space inside parenthesis
-                                    .replace( /\(\s*/g, '('+settings.parenPadding )
-                                    .replace( /\s*\)/g, settings.parenPadding+')' )
-                                    // remove space from inside attribute selectors
-                                    .replace( /\[\s*/g, '[')
-                                    .replace( /\s*\]/g, ']')
-                                    // remove space from around attribute qualifier
-                                    .replace( /\s*([~$|*\^]?=)\s*/g, '$1')
-                                    // add quotes around attribute value if required
-                                    .replace( /(\[[\w-_]+[~$|*\^]?=)([^'"\]]+)]/g, (settings.requireAttributeQuotes?'$1\'$2\'\]':'$1$2\]') )
-                                    // update quotes to match setting
-                                    .replace( /["']/g, settings.quoteType )
-                            })
-                            // space before each selector
-                            .replace( /^\s*/, settings.afterSelector )
-                            // remove any trailing spaces before comma
-                            .replace( /\s*,\s*$/, ',')
-                    })
-                    // space after comments
-                    .replace( /(\/\*((?!\*\/)(.|\n))*\*\/)\s*/g, '$1'+settings.afterComment )
-                    // space after selectors, before open brace
-                    .replace( /\s*$/, settings.beforeOpenBrace )
-                    // remove space from before ruleset
-                    .replace( /^\s*/, '' )
-                // content of ruleset
-                + '{' + block
-                    // each declaration/line
-                    .replace( regex.ruleset.line, function(line) {
-                        return line
-                            // property
-                            .replace( /^\s*[*_]?[\w-]+\s*/, function(property){
-                                return property
-                                    // space after property, before colon
-                                    .replace( /\s*$/, settings.afterProperty )
-                            })
-                            // value
-                            .replace( regex.ruleset.value, function(value){
-                                return value
-                                    // space before value, after colon
-                                    .replace( /^\s*/, settings.beforeValue )
-                                    // space after commas
-                                    .replace( /\s*,\s*/g, ','+settings.afterComma)
-                                    // space before !important
-                                    .replace(/\s*(\!important)/, ' $1')
-                                    // space before same-line comment
-                                    .replace( / *(\/\*((?!\*\/).)*\*\/)/g, ' $1')
-                                    // remove quotes from around url value if set
-                                    .replace( /(url\(\s*)["']([^\)"']*)['"](\s*\))/g, (settings.removeURLQuotes?'$1$2$3':'$1\'$2\'$3') )
-                                    // space inside parenthesis
-                                    .replace( /\(\s*/g, '('+settings.parenPadding )
-                                    .replace( /\s*\)/g, settings.parenPadding+')' )
-                                    // update quotes to match setting
-                                    .replace( /["']/g, settings.quoteType )
-                                    // lowercase hexadecimals
-                                    .replace(/#[\d\w]{3,6}/, function(hex){
-                                        return settings.lowercaseHex ? hex.toLowerCase() : hex.toUpperCase();
-                                    })
-                                    // if semicolon is missing and setting is set, add final semicolon
-                                    .replace(/([)'"%\w\d])((?:\s*\/\*((?!\*\/)(.|\n))*\*\/)*\s*)$/, '$1'+(settings.addLastSemiColon?';':'')+'$2')
-                                    // shorten qualifying hexadecmials
-                                    .replace(/(#([\w\d])\2([\w\d])\3([\w\d])\4)/g, (settings.shortenHex?'#$2$3$4':'$1') )
-                                    // add or remove leading zero if setting set
-                                    .replace( /0?(\.\d+(em|ex|%|px|cm|mm|in|pt|pc|ch|rem|vh|vw|vmin|vmax))\b/g, (settings.removeLeadingZero?'':'0')+'$1' )
-                                    // remove units on zeros if setting set
-                                    .replace( /\b0(em|ex|%|px|cm|mm|in|pt|pc|ch|rem|vh|vw|vmin|vmax)\b/g, '0'+(settings.removeZeroUnits?'':'$1') )
-                                    // remove any space from before closing semicolon
-                                    .replace(/\s*;$/, ';');
-                            })
-                            // space before each declaration/line
-                            .replace( /^\s*/, settings.beforeDeclaration+settings.indentation)
-                    })
-                    // space after last declaration, before closing brace
-                    .replace( /\s*$/, settings.afterDeclarations )
-                // closing brace and traling space
-                + '}' + settings.afterRule;
-            })
-            // at rules
-            .replace( regex.atrules.rule, function( rule, selector, block ) {
-                // whole rule selector
-                return selector
-                    // individual selectors
-                    // @rule split into parts
-                    .replace( regex.atrules.parts, function( parts ) {
-                        return parts
-                            // one space before each part
-                            .replace( /^\s*/, ' ' )
-                            // space inside parenthesis
-                            .replace( /\(\s*/g, '('+settings.parenPadding )
-                            .replace( /\s*\)/g, settings.parenPadding+')' )
-                            // remove space from before any comma
-                            .replace( /^\s*,$/, ',')
-                    })
-                    // remove any trailing spaces before semicolon
-                    .replace( /\s*[;]\s*$/, ';')
-                    // space after comments
-                    .replace( /(\/\*((?!\*\/)(.|\n))*\*\/)\s*/g, '$1'+settings.afterComment )
-                    // space after selectors, before open brace
-                    .replace( /\s*{\s*$/, settings.beforeOpenBrace+'{' )
-                // rule block if exists
-                + ( typeof block !== 'undefined' ? ( block
-                    // space before the first ruleset
-                    .replace(/^\s*/, settings.beforeDeclaration+settings.atRulePadding)
-                    // indent every new line
-                    .replace(/\n(.+)/g, '\n'+settings.indentation+'$1')
-                    // space after last ruleset
-                    .replace(/\s*$/, settings.afterDeclarations+settings.atRulePadding)
-                // closing brace and trailing space
-                + '}') : '') + settings.afterRule;
-            })
-            // trim string
-            .trim();
+    var tokenize = function(input) {
+
+        var token = new TokenStream(input);
+
+        settings.onStart.call(this);
+
+        token.iterate(function(){
+
+            // local var for brevity
+            var t = this;
+
+            // forward slash --------------------------------------------
+
+            if( t.is('\\/') ) {
+
+                // start of a comment
+                if( t.is('\\*',1) ) {
+
+                    // eat characters until end of comment
+                    t.consume(function() {
+
+                        // look forward to see if we're at
+                        // the close of the comment
+                        return this.peek(1, true) != '*/';
+
+                    }).move(2);
+
+                    // if @ 'root' level
+                    // /* ... */[here] .class {...}
+                    if( t.at('root') ) {
+
+                        // add space after comment
+                        t.concat(settings.afterRule);
+
+                        // if @ '@-root' level add indent as well
+                        if( t.at('^@') && !t.anticipate('}') ) {
+                            t.concat(settings.indent);
+                        }
+
+                    }
+
+                    // else if @ 'rule-property' level
+                    // { /* ... */[here] display: block; ... }
+                    else if( t.position == 'rule-property' ) {
+
+                        // add space after declaration
+                        t.concat( settings.afterDeclaration );
+                        
+                        // if were not at the end of the 
+                        // rule yet, add an indentation
+                        if( !t.anticipate('}') ) {
+                            t.concat(settings.indent);
+                        }
+
+                    // else @ any other level, to avoid infinitely 
+                    // looping, just move forward
+                    } else { t.move(); }
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // at sign --------------------------------------------
+
+            if( t.is('@') ) {
+
+                // if @ 'root' level
+                // @[here]...;
+                if( t.at('root') ) {
+
+                    // change stream position
+                    t.change('@-start', true);
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // comma --------------------------------------------
+
+            if( t.is(',') ) {
+
+                // if @ 'rule-start' level
+                // .class,[here].class { ...
+                if( t.at('rule-start') ) {
+
+                    // add space after comma separated selector
+                    t.move().concat( settings.afterSelector );
+
+                    // if @ '@-rule-start' level add indent 
+                    // and remove any following spaces
+                    if( t.at('^@') ) {
+
+                        // concat indent to string and remove spaces
+                        t.concat(settings.indent).spaces();
+
+                    }
+
+                // if @ 'rule-value' or '@-rule-value' level
+                // ... font-family: Arial,[here] ...
+                } else if( t.at('rule-value') ) {
+
+                    // move cursor after comma,
+                    // skip any spaces and add space
+                    t.move().spaces().concat(' ');
+
+                // if @ '@-start' level
+                // @import "..." screen,[here] projection;
+                } else if( t.position == '@-start' ) {
+
+                    // add a space after @-rule commas
+                    t.move().concat(' ');
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // open bracket --------------------------------------------
+
+            if( t.is('\\[') ) {
+
+                // eat characters until closing bracket 
+                // or the start of a string
+                t.iterate(function(){
+
+                    // if a space, skip it, else consume it
+                    this[(this.is('\\s')?'next':'move')]();
+
+                // condition for iterate method
+                }, function(){ 
+
+                    // match closing bracket or quote
+                    return !this.is('["\'\\]]');
+
+                });
+
+            }
+
+            // close bracket --------------------------------------------
+
+            if( t.is('\\]') ) {
+
+                // to avoid infinitely looping, 
+                // move forward one
+                t.move();
+
+            }
+
+            // open paren --------------------------------------------
+
+            if( t.is('\\(') ) {
+
+                // eat characters until closing paren 
+                // or the start of a string
+                t.iterate(function(){
+
+                    // if a space, skip it, else consume it
+                    if( this.is('\\s') ) this.next();
+                    else this.move();
+
+                // condition for iterate method
+                }, function(){ 
+
+                    // match closing paren or quote
+                    return !this.is('["\'\\)]');
+
+                });
+
+            }
+
+            // close paren --------------------------------------------
+
+            if( t.is('\\)') ) {
+
+                // if @ '@-start' level
+                // @import url("...")[here];
+                if( t.at('@-start') ) {
+
+                    // determine whether or not we are 
+                    // reaching the of an at rule line
+                    // before moving forward
+                    var end = t.anticipate(';');
+
+                    // move forward and skip any spaces
+                    t.move().spaces();
+
+                    // if not at the end, add a space
+                    // before the next property
+                    if( !end ) t.concat(' ');
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // open double quotes --------------------------------------------
+
+            if( t.is('\\"') ) {
+
+                // quote type
+                var quote = settings.quoteType;
+
+                // see if we are dealing with a charset
+                // so I can force the quotes to be double
+                if( t.at('@-start') && /tesrahc@/i.test(t.peek(-10)) ) {
+                    quote = '"';
+                }
+
+                // add the quote, according to setting
+                // and move forward past it
+                t.concat( quote ).next();
+
+                // eat characters until the matching quote
+                t.eat('\\"');
+
+                // add the correct quote quote
+                // and move past quote
+                t.concat( quote ).next();
+
+            }
+
+            // open single quotes --------------------------------------------
+
+            if( t.is("'") ) {
+
+                // quote type
+                var quote = settings.quoteType;
+
+                // see if we are dealing with a charset
+                // so I can force the quotes to be double
+                if( t.at('@-start') && /tesrahc@/i.test(t.peek(-10)) ) {
+                    quote = '"';
+                }
+
+                // add the quote, according to setting
+                // and move forward past it
+                t.concat( quote ).next();
+
+                // eat characters until the matching quote
+                t.eat("\\'");
+
+                // add the correct quote quote
+                // and move past quote
+                t.concat( quote ).next();
+
+            }
+
+            // 0 --------------------------------------------------------
+
+            if( t.is('0') ) {
+
+                // if @ 'rule-start' or '@-rule-start' level
+                // span-[here]0 { ...
+                if( t.at('rule-start') ) {
+
+                    // see if the start of the rule is next
+                    var end = t.anticipate('{');
+
+                    // move the cursor foward
+                    t.move();
+
+                    // if we're at the end, remove any spaces 
+                    // and replace with settings
+                    if( end ) {
+                        t.spaces().concat( settings.afterSelectors );
+                    } 
+
+                // if @ 'rule-value' level
+                // ... margin: 0[here]; ...
+                } else if( t.at('rule-value') ) {
+
+                    // look forward 4 chracters to see 
+                    // what we're dealing with
+                    var peek = t.peek(4);
+
+                    // if the trailing chars match a unit of measurement and 
+                    // the previous is not a digit as well
+                    // match -> 0px | no match -> 10px
+                    if( /^(em|ex|%|px|cm|mm|in|pt|pc|ch|rem|vh|vw|vmin|vmax)/.test(peek) && !/\d/.test(t.peek(-1)) ) {
+
+                        if( settings.removeZeroUnits ) {
+
+                            //calculate the length of the measurement so
+                            // we know how many places to skip
+                            var length = peek.match(/^(em|ex|%|px|cm|mm|in|pt|pc|ch|rem|vh|vw|vmin|vmax)/)[0].length;
+
+                            // add the zero and then skip the measurement 
+                            t.move().next(length);
+
+                        } 
+
+                    }
+
+                    // if the following characters prove the zero
+                    // prefaces a decimal value, skip the zero
+                    else if( /^\.\d/.test(peek) ) {
+                        if( settings.removeLeadingZeros ) t.next();
+                    }
+
+                    // if not either of the above exceptions,
+                    // just add the zero and move forward like normal
+                    else { t.move(); }
+
+                } 
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                else { t.move(); }
+
+            }
+
+            // open brace --------------------------------------------
+
+            if( t.is('\\{') ) {
+
+                // if @ 'rule-start' or '@-rule-start' level
+                // .class {[here] 
+                if( t.at('rule-start') ) {
+
+                    // determine whether or not we are 
+                    // currently in an at rule
+                    var at = t.at('^@');
+
+                    // change status to property level and move forward
+                    t.change( (at?'@-':'')+'rule-property', true );
+
+                    // if we're not at the end of the rule add the
+                    // space for after a declaration and indent
+                    if( !t.anticipate('}', true) ) {
+
+                        // add space for after declaration and indentation
+                        t.concat( settings.afterDeclaration+settings.indent );
+
+                        // if inside an at rule, add an extra indent
+                        if( at ) t.concat(settings.indent);
+
+                    }
+
+                // if @ '@-start' level
+                // @screen screen ... {[here]
+                } else if( t.at('@-start') ) {
+
+                    // change status to @-root level and move forward
+                    t.change( '@-root', true );
+
+                    // if we're not the end of the rule add the
+                    // space for after a declaration + at-rule padding + indent
+                    if( !t.anticipate('}', true) ) {
+                        t.concat( settings.afterDeclaration+settings.atRulePadding+settings.indent );
+                    }
+                
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // close brace --------------------------------------------
+
+            if( t.is('\\}') ) {
+
+                // if @ 'rule-property' or'rule-value' in or out of at rule
+                // note: rule property was included in case the last declaration
+                // doesn't have a semicolon and it hasn't changed back to value
+                // margin: 0; ... }[here]
+                if( t.at('rule-property|rule-value') ) {
+
+                    // determine whether or not we are 
+                    // currently in an at rule
+                    var at = t.at('^@');
+
+                    // change the position and move forward
+                    t.change( (at?'@-':'')+'root', true );
+
+                    // add space for after a rule
+                    t.concat( settings.afterRule );
+
+                    // if in at rule and we're at the end of the rule
+                    // add another indentation
+                    if( at && !t.anticipate('}') ) {
+                        t.concat( settings.indent );
+                    }
+
+                // if @ '@-root' level
+                // @media ... { ... }[here]
+                } else if( t.at('@-root') ) {
+
+                    // change position back to root level, move forward,
+                    // and add appropriate space for after a rule
+                    t.change( 'root', true ).concat( settings.afterRule );
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // hash --------------------------------------------
+
+            if( t.is('#') ) {
+
+                // if @ 'root' or '@-root' level
+                // [here]#div { ...
+                if( t.at('root') ) {
+
+                    // determine whether or not we are 
+                    // currently in an at rule
+                    var at = t.at('^@');
+
+                    // change the position and move forward
+                    t.change( (at?'@-':'')+'rule-start', true );
+
+                // if @ 'rule-value' or '@-rule-value' level
+                // ... color: #[here]ffffff; ...
+                } else if( t.at('rule-value') ) {
+
+                    // grab the potential hex value
+                    // six chracters ahead
+                    var peek = t.peek(6, true);
+
+                    // placeholder to hold hex value
+                    var hex = '';
+
+                    // shorten qualifying hexadecmials
+                    if( settings.shortenHex ) {
+                        hex = peek.replace(/#([\w\d])\1([\w\d])\2([\w\d])\3/g, '#$1$2$3' );
+                    }
+
+                    // change hexadecimal letter case
+                    if( settings.lowercaseHex ) {
+                        hex = hex.toLowerCase();
+                    }
+
+                    // if six character hex, skip entire hex
+                    // and concatonate the new one
+                    if( /^#[a-fA-F\d]{6}$/.test(peek) ) {
+
+                        t.next(7).concat( hex );
+
+                    // if three character hex, skip three
+                    // and concatonate the new one
+                    } else if( /^#[a-fA-F\d]{3}\b/.test(peek) ) {
+
+                        // truncate the end of the hex string 
+                        // so we're only adding the hex part
+                        t.next(4).concat( hex.slice(0,4) );
+
+                    // if not a hex match, just move forward
+                    } else { t.move(); }
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // colon --------------------------------------------
+
+            if( t.is(':') ) {
+
+                // if @ 'rule-property' or '@-rule-property' level
+                // ... margin:[here] ...
+                if( t.at('rule-property') ) {
+
+                    // determine whether or not we are 
+                    // currently in an at rule
+                    var at = t.at('^@');
+
+                    // change the position and move forward
+                    t.change( (at?'@-':'')+'rule-value', true );
+
+                    // if the following character is not white space, add some
+                    if( !t.is(' ') ) {
+                        t.concat(' ');
+                    }
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // semi-colon --------------------------------------------
+
+            if( t.is(';') ) {
+
+                // if @ 'rule-value' or '@-rule-value' level
+                // ... margin: 0;[here] ...
+                if( t.at('rule-value') ) {
+
+                    // see if we have reached the end
+                    // of the ruleset
+                    var end = t.anticipate('}');
+
+                    // determine whether or not we are 
+                    // currently in an at rule
+                    var at = t.at('^@');
+
+                    // change the position and move forward
+                    t.change( (at?'@-':'')+'rule-property', true );
+
+                    // skip any spaces following the semicolon
+                    t.spaces();
+
+                    // add space for after declaration
+                    t.concat( settings.afterDeclaration );
+
+                    // if we are not at the end, add
+                    // indent to prep for next property
+                    if( !end ) t.concat('    ');
+
+                    // if in an at-rule, add an additional indent
+                    if( at ) t.concat( settings.indent );
+
+                // if @ '@start' level
+                // @charset "UTF-8";[here]
+                } else if( t.at('@-start') ) {
+
+                    // change position, move forward, add after rule spacing
+                    t.change('root', true).concat( settings.afterRule );
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // combinators --------------------------------------------
+
+            if( t.is('[>~+]') ) {
+
+                // if @ 'rule-start' or '@-rule-start' level
+                // .class >[here] .class { ...
+                if( t.at('rule-start') ) {
+
+                    // if the previous character is 
+                    // not a space, add one
+                    if( !t.is('\s',-1) ) t.concat(' ');
+
+                    // add the combinator without 
+                    // moving the cursor ahead
+                    t.add();
+
+                    // if the next character is not
+                    // a space, add one
+                    if( !t.is('\s',1) ) t.concat(' ');
+
+                    // move the cursor past the combinator
+                    t.next();
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // white space --------------------------------------------
+
+            if( t.is('\\s') ) {
+
+                // if @ 'root'/'@-root' or @ 'rule-property'/'@-rule-property' levels
+                // .class { } [here] .class { } or [here] display [here]: block; ...
+                if( t.at('root') ||  t.at('rule-property') ) {
+
+                    // skip any white space
+                    t.spaces();
+
+                // if @ 'rule-start' or '@-rule-start' level
+                // .class [here] .class { ...
+                } else if( t.at('rule-start') ) {
+
+                    // see if 1) we are exiting a string, but still inside
+                    // a paren or bracket 2) before a comma
+                    var end = t.anticipate('[\\]\\),]');
+
+                    // skip any spaces
+                    t.spaces();
+
+                    // if we are not at the end of the selector
+                    // or not following a new line, add a space
+                    if( !end && !/\n/.test(t.string.slice(-1)) ) t.concat(' ');
+
+                // if @ 'rule-value' or '@-rule-value' level
+                // margin: [here] 10px [here] 10px [here]; ...
+                } else if( t.at('rule-value') ) {
+
+                    // see if 1) we are exiting a string, but still inside
+                    // a paren 2) before a semi-colon
+                    var end = t.anticipate('[\\);]');
+
+                    // skip any spaces
+                    t.spaces();
+
+                    // if we are not at the end of the value, add a space
+                    if( !end ) t.concat(' ');
+
+                }
+
+                // if @ '@-start' level
+                // @media [here] screen ... 
+                else if( t.at('@-start') ) {
+
+                    // see if 1) we are exiting a string, but still inside
+                    // a paren or brackets 2) before a semi-colon or comma
+                    var end = t.anticipate('[\\]\\),;]');
+
+                    // skip any spaces
+                    t.spaces();
+
+                    // if we are not at the end of the rule, add a space
+                    if( !end ) t.concat(' ');
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // words and digits --------------------------------------------
+
+            if( t.is('[a-zA-Z1-9]') ) {
+
+                // if @ 'root' or '@-root' level
+                // [here] div { ...
+                if( t.at('root') ) {
+
+                    // determine whether or not we are 
+                    // currently in an at rule
+                    var at = t.at('^@');
+
+                    // change the position and move forward and
+                    // keep doing so if followed by more letters
+                    t.change( (at?'@-':'')+'rule-start', true );
+
+                    // continue to eat if single word
+                    t.eat('[\\w\\-_]');
+
+                // if @ 'rule-start' or '@-rule-start' level
+                // d[here]iv { ...
+                } else if( t.at('rule-start') ) {
+
+                    // see if the start of the rule is next
+                    var end = t.anticipate('{');
+
+                    // move the cursor foward
+                    t.move();
+
+                    // if we're at the end, remove any spaces 
+                    // and replace with settings
+                    if( end ) {
+                        t.spaces().concat( settings.afterSelectors );
+                    }
+
+                // if @ 'rule-value' or '@-rule-value' level
+                // display: [here]block;
+                } else if( t.at('rule-value') ) {
+
+                    // if the end or ruleset is coming
+                    var end = t.anticipate('}');
+
+                    // move the cursor foward
+                    t.move();
+
+                    // if we're at the end, remove any spaces, 
+                    // add optional semi-colon and add space
+                    if( end ) {
+
+                        // remove spaces
+                        t.spaces();
+
+                        // add missing semi-colon if set
+                        if( settings.finalSemiColon ) t.concat(';');
+
+                        // add trailing space
+                        t.concat( settings.afterDeclaration );
+
+                    }
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // asterisk --------------------------------------------
+
+            if( t.is('\\*') ) {
+
+                // if @ 'root' level
+                // [here] div { ...
+                if( t.at('^root') ) {
+
+                    // change the position and move cursor
+                    // and keep doing so if followed by more letters
+                    t.change( 'rule-start', true );
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // period --------------------------------------------
+
+            if( t.is('\\.') ) {
+
+                // if @ 'root' level
+                // [here] div { ...
+                if( t.at('^root') ) {
+
+                    // change the position and move cursor
+                    // and keep doing so if followed by more letters
+                    t.change( 'rule-start', true );
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+                // continue to eat if single word
+                t.eat('[\\w\\-_]');
+
+            }
+
+            // exclamation point --------------------------------------------
+
+            if( t.is('!') ) {
+
+                // if @ 'rule-value' or '@-rule-value' level
+                // [here]!important
+                if( t.at('rule-value') ) {
+
+                    // make sure this is an imporant
+                    if( /important/.test(t.peek(9)) ) {
+
+                        // if not prefaced by a space, add one
+                        if( !/ /.test(t.peek(-1)) ) {
+                            t.concat(' ');
+                        }
+
+                    }
+
+                    // move forward
+                    t.move();
+
+                // else @ any other level, to avoid infinitely 
+                // looping, just move forward
+                } else { t.move(); }
+
+            }
+
+            // unused characters --------------------------------------------
+
+            if( t.is('[`$%^\\-_=<?]') ) {
+
+                // if a non-key character, just move forward
+                t.move();
+
+            }
+
+            // run the iterate callback method
+            settings.onIteration.call(this);
+
+
+        });
+
+        // run the completion callback method
+        settings.onComplete.call(this);
+
+        return token.string.trimRight();
+
+    }
+
+    return function(input, options) {
+
+        return tokenize(input);
+
     }
 
 })();
